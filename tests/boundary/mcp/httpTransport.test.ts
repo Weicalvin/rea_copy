@@ -1,6 +1,10 @@
+import { createServer } from "node:http";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createMcpHttpRequestHandler } from "../../../src/main/httpTransport.js";
+import {
+  applyCors,
+  createMcpHttpRequestHandler,
+} from "../../../src/main/httpTransport.js";
 
 describe("MCP HTTP request handler", () => {
   const token = "a".repeat(64);
@@ -39,11 +43,12 @@ describe("MCP HTTP request handler", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("forwards an authenticated request to the SDK handler", async () => {
+  it("forwards an authenticated request from any Origin to the SDK handler", async () => {
     const request = new Request("http://localhost/mcp", {
       method: "POST",
       headers: {
         host: "localhost",
+        origin: "https://frontend.example",
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
       },
@@ -55,12 +60,13 @@ describe("MCP HTTP request handler", () => {
     expect(fetchMock).toHaveBeenCalledWith(request);
   });
 
-  it("rejects untrusted Host and Origin headers", async () => {
+  it("rejects an untrusted Host header while retaining Origin-independent CORS policy", async () => {
     const untrustedHost = await app(
       new Request("http://localhost/mcp", {
         method: "POST",
         headers: {
           host: "attacker.example",
+          origin: "https://frontend.example",
           authorization: `Bearer ${token}`,
           "content-type": "application/json",
         },
@@ -68,21 +74,54 @@ describe("MCP HTTP request handler", () => {
       }),
     );
     expect(untrustedHost.status).toBe(403);
-
-    const untrustedOrigin = await app(
-      new Request("http://localhost/mcp", {
-        method: "POST",
-        headers: {
-          host: "localhost",
-          origin: "https://attacker.example",
-          authorization: `Bearer ${token}`,
-          "content-type": "application/json",
-        },
-        body: "{}",
-      }),
-    );
-    expect(untrustedOrigin.status).toBe(403);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("allows any browser Origin and handles MCP preflight requests", async () => {
+    const server = createServer((request, response) => {
+      applyCors(request, response, () => response.end("ok"));
+    });
+    server.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve, reject) => {
+      server.once("listening", resolve);
+      server.once("error", reject);
+    });
+    const address = server.address();
+    if (address === null || typeof address === "string")
+      throw new Error("Test HTTP server did not bind to a TCP port");
+
+    try {
+      const preflight = await fetch(`http://127.0.0.1:${address.port}/mcp`, {
+        method: "OPTIONS",
+        headers: {
+          Origin: "https://unrelated-frontend.example",
+          "Access-Control-Request-Method": "POST",
+          "Access-Control-Request-Headers":
+            "authorization,content-type,mcp-protocol-version",
+        },
+      });
+      expect(preflight.status).toBe(204);
+      expect(preflight.headers.get("access-control-allow-origin")).toBe("*");
+      expect(preflight.headers.get("access-control-allow-methods")).toContain(
+        "POST",
+      );
+      expect(preflight.headers.get("access-control-allow-headers")).toContain(
+        "Authorization",
+      );
+      expect(preflight.headers.get("access-control-allow-credentials")).toBe(
+        null,
+      );
+
+      const actual = await fetch(`http://127.0.0.1:${address.port}/health`, {
+        headers: { Origin: "https://another-frontend.example" },
+      });
+      expect(actual.status).toBe(200);
+      expect(actual.headers.get("access-control-allow-origin")).toBe("*");
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
   });
 
   it("fails closed when the bearer secret is missing or too short", () => {

@@ -2,10 +2,9 @@ import {
   createMcpHandler,
   hostHeaderValidationResponse,
   localhostAllowedHostnames,
-  localhostAllowedOrigins,
-  originValidationResponse,
 } from "@modelcontextprotocol/server";
 import type { McpServerFactory } from "@modelcontextprotocol/server";
+import cors from "cors";
 import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { Readable } from "node:stream";
@@ -29,6 +28,22 @@ const HOP_BY_HOP_HEADERS = new Set([
 ]);
 
 type McpHttpHandler = ReturnType<typeof createMcpHandler>;
+
+export const applyCors = cors({
+  origin: "*",
+  methods: ["GET", "HEAD", "POST", "DELETE", "OPTIONS"],
+  allowedHeaders: [
+    "Accept",
+    "Authorization",
+    "Content-Type",
+    "Last-Event-ID",
+    "MCP-Protocol-Version",
+    "MCP-Session-Id",
+  ],
+  exposedHeaders: ["MCP-Protocol-Version", "MCP-Session-Id"],
+  maxAge: 86_400,
+  optionsSuccessStatus: 204,
+});
 
 const validatedToken = (environment: Readonly<NodeJS.ProcessEnv>): Buffer => {
   const token = environment[HTTP_TOKEN_ENV];
@@ -70,29 +85,12 @@ const trustedHostnames = (environment: Readonly<NodeJS.ProcessEnv>) => {
   return [...hostnames];
 };
 
-const trustedOrigins = (environment: Readonly<NodeJS.ProcessEnv>) => {
-  const hostnames = new Set(localhostAllowedOrigins());
-  const configuredHost = environment.RENDER_EXTERNAL_HOSTNAME;
-  if (configuredHost !== undefined && configuredHost.length > 0)
-    hostnames.add(configuredHost.toLowerCase());
-  const externalUrl = environment.RENDER_EXTERNAL_URL;
-  if (externalUrl !== undefined) {
-    try {
-      hostnames.add(new URL(externalUrl).hostname.toLowerCase());
-    } catch {
-      // An invalid optional platform URL does not widen the allowlist.
-    }
-  }
-  return [...hostnames];
-};
-
 export const createMcpHttpRequestHandler = (
   handler: McpHttpHandler,
   environment: Readonly<NodeJS.ProcessEnv>,
 ): ((request: Request) => Promise<Response>) => {
   const token = validatedToken(environment);
   const allowedHosts = trustedHostnames(environment);
-  const allowedOrigins = trustedOrigins(environment);
 
   return async (request) => {
     const url = new URL(request.url);
@@ -118,12 +116,6 @@ export const createMcpHttpRequestHandler = (
       allowedHosts,
     );
     if (invalidHost !== undefined) return invalidHost;
-    const invalidOrigin = originValidationResponse(
-      validationRequest,
-      allowedOrigins,
-    );
-    if (invalidOrigin !== undefined) return invalidOrigin;
-
     if (!matchesBearerToken(request.headers.get("authorization"), token))
       return new Response(JSON.stringify({ error: "unauthorized" }), {
         status: 401,
@@ -236,33 +228,50 @@ export const serveHttp: RuntimeServerTransport = async (
   }
 
   const server = createServer((incoming, outgoing) => {
-    const controller = new AbortController();
-    incoming.once("aborted", () => controller.abort());
-    outgoing.once("close", () => {
-      if (!outgoing.writableEnded) controller.abort();
-    });
-    void (async () => {
-      try {
-        const request = requestFromNode(
-          incoming,
-          environment,
-          controller.signal,
-        );
-        await writeWebResponse(await dispatch(request), outgoing);
-      } catch (cause) {
+    applyCors(incoming, outgoing, (corsError) => {
+      if (corsError) {
         options.onerror?.(
-          cause instanceof Error ? cause : new Error("HTTP request failed"),
+          corsError instanceof Error
+            ? corsError
+            : new Error("CORS middleware failed"),
         );
-        if (!outgoing.headersSent) {
-          outgoing.statusCode = 500;
-          outgoing.setHeader("cache-control", "no-store");
-          outgoing.setHeader("content-type", "application/json; charset=utf-8");
-          outgoing.end(JSON.stringify({ error: "internal_server_error" }));
-        } else if (!outgoing.destroyed) {
-          outgoing.destroy();
-        }
+        outgoing.statusCode = 500;
+        outgoing.end();
+        return;
       }
-    })();
+      if (outgoing.writableEnded) return;
+
+      const controller = new AbortController();
+      incoming.once("aborted", () => controller.abort());
+      outgoing.once("close", () => {
+        if (!outgoing.writableEnded) controller.abort();
+      });
+      void (async () => {
+        try {
+          const request = requestFromNode(
+            incoming,
+            environment,
+            controller.signal,
+          );
+          await writeWebResponse(await dispatch(request), outgoing);
+        } catch (cause) {
+          options.onerror?.(
+            cause instanceof Error ? cause : new Error("HTTP request failed"),
+          );
+          if (!outgoing.headersSent) {
+            outgoing.statusCode = 500;
+            outgoing.setHeader("cache-control", "no-store");
+            outgoing.setHeader(
+              "content-type",
+              "application/json; charset=utf-8",
+            );
+            outgoing.end(JSON.stringify({ error: "internal_server_error" }));
+          } else if (!outgoing.destroyed) {
+            outgoing.destroy();
+          }
+        }
+      })();
+    });
   });
 
   try {

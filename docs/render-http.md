@@ -15,12 +15,15 @@ start if the secret is missing or too short. Send it only as an
 `Authorization: Bearer <token>` header. The `/health` route is intentionally
 unauthenticated and returns no application or environment details.
 
-The HTTP adapter validates Host and Origin against localhost and Render's
-`RENDER_EXTERNAL_HOSTNAME` / `RENDER_EXTERNAL_URL` values to reduce DNS-rebinding
-risk. It binds to `0.0.0.0` and Render's `PORT`; do not replace these with a fixed
-public port. The SDK handler serves modern per-request MCP and its legacy
-stateless fallback. The process-level REA session remains shared by requests
-within this single authenticated service instance.
+The HTTP adapter allows browser requests from any Origin (`Access-Control-Allow-Origin: *`)
+and handles CORS preflight requests, including the MCP authorization and protocol
+headers. Cookie credentials are not enabled. The MCP endpoint still requires the
+Bearer token, and the adapter continues to validate Host against localhost and
+Render's `RENDER_EXTERNAL_HOSTNAME` / `RENDER_EXTERNAL_URL` values to reduce
+DNS-rebinding risk. It binds to `0.0.0.0` and Render's `PORT`; do not replace
+these with a fixed public port. The SDK handler serves modern per-request MCP
+and its legacy stateless fallback. The process-level REA session remains shared
+by requests within this single authenticated service instance.
 
 Render's Free web services may spin down after inactivity and can have a cold
 start on the next request. This is platform behavior, not an application health
