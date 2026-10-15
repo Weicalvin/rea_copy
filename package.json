@@ -313,6 +313,7 @@
     "*.{json,md,yml,yaml}": "oxfmt --no-error-on-unmatched-pattern"
   },
   "dependencies": {
+    "cors": "^2.8.5",
     "@babel/parser": "8.0.4",
     "@babel/types": "8.0.4",
     "@clack/prompts": "1.7.0",
