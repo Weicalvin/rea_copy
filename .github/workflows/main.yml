@@ -1,0 +1,42 @@
+# ==============================================================================
+# .github/workflows/build-apk.yml
+# GitHub Actions 自動化構建 Android APK 工作流
+# 觸發條件：推送到 main 分支、發布 tag (如 v1.0.0)、或在 GitHub 網頁手動觸發 (workflow_dispatch)
+# ==============================================================================
+name: Build Android APK (EAS Cloud)
+
+on:
+  workflow_dispatch: # 支援在 GitHub Actions 頁面手動點擊按鈕執行
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build Android APK with EAS
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 檢出專案程式碼
+        uses: actions/checkout@v4
+
+      - name: 設定 Node.js 環境
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: 安裝專案依賴
+        run: npm ci
+
+      - name: 安裝 EAS CLI
+        run: npm install -g eas-cli
+
+      - name: 配置 EAS 憑證與環境變數
+        run: |
+          echo "EXPO_PUBLIC_API_BASE_URL=${{ secrets.EXPO_PUBLIC_API_BASE_URL }}" >> .env
+          echo "EXPO_PUBLIC_API_BEARER_TOKEN=${{ secrets.EXPO_PUBLIC_API_BEARER_TOKEN }}" >> .env
+
+      - name: 執行 EAS 雲端編譯 Android APK (免本地 Android SDK)
+        # 使用 preview profile (輸出為獨立 APK 檔案，非 Play Store AAB)
