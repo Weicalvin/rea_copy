@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Route production MCP before importing Incur. Incur owns registration helpers
-// such as `mcp add`, while the MCP runtime serves the stdio tool catalog.
+// such as `mcp add`, while MCP runtimes serve the stdio or HTTP tool catalog.
 const args = process.argv.slice(2);
 const { default: packageJson } = await import("../package.json", {
   with: { type: "json" },
@@ -13,6 +13,8 @@ const { default: packageJson } = await import("../package.json", {
 process.env.REA_PACKAGE_VERSION = packageJson.version;
 const isMcpMode =
   args.length === 1 && (args[0] === "--mcp" || args[0] === "mcp");
+const isMcpHttpMode =
+  args.length === 1 && (args[0] === "--http" || args[0] === "http");
 const isMcpDoctorMode = args[0] === "mcp" && args[1] === "doctor";
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -36,15 +38,17 @@ if (
   process.env.PLAYWRIGHT_BROWSERS_PATH = join(cacheRoot, "ms-playwright");
 }
 
-const runtimeFiles = isMcpMode
-  ? ["dist/mcp/main.js"]
-  : isMcpDoctorMode
-    ? ["dist/mcp/main.js", "dist/cli-runtime/mcpDoctor.js"]
-    : [
-        "dist/cli-runtime/cli.js",
-        "dist/cli-runtime/cliOutput.js",
-        "dist/cli-runtime/cliResultOutput.js",
-      ];
+const runtimeFiles = isMcpHttpMode
+  ? ["dist/http/main.js"]
+  : isMcpMode
+    ? ["dist/mcp/main.js"]
+    : isMcpDoctorMode
+      ? ["dist/mcp/main.js", "dist/cli-runtime/mcpDoctor.js"]
+      : [
+          "dist/cli-runtime/cli.js",
+          "dist/cli-runtime/cliOutput.js",
+          "dist/cli-runtime/cliResultOutput.js",
+        ];
 
 if (!(await compiledRuntimeExists(runtimeFiles))) {
   process.stderr.write(
@@ -54,6 +58,9 @@ if (!(await compiledRuntimeExists(runtimeFiles))) {
 } else if (isMcpMode) {
   const { runEntrypoint } = await import("../dist/mcp/main.js");
   await runEntrypoint();
+} else if (isMcpHttpMode) {
+  const { runHttpEntrypoint } = await import("../dist/http/main.js");
+  await runHttpEntrypoint();
 } else if (isMcpDoctorMode) {
   const { runProductionMcpDoctorCli } =
     await import("../dist/cli-runtime/mcpDoctor.js");

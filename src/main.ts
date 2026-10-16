@@ -22,9 +22,12 @@ import {
 import { createToolResultDelivery } from "./server/toolResult.js";
 import { createShutdown } from "./main/shutdown.js";
 
-const runtimeDependencies = (): RuntimeDependencies => ({
+export const createRuntimeDependencies = (
+  serve: RuntimeDependencies["serve"] = serveStdio,
+  monitorStdin = serve === serveStdio,
+): RuntimeDependencies => ({
   env: process.env,
-  serve: serveStdio,
+  serve,
   writeStderr: (text) => process.stderr.write(text),
   setExitCode: (code) => {
     process.exitCode = code;
@@ -32,13 +35,17 @@ const runtimeDependencies = (): RuntimeDependencies => ({
   registerShutdown: (handler) => {
     process.once("SIGINT", handler);
     process.once("SIGTERM", handler);
-    process.stdin.once("end", handler);
-    process.stdin.once("close", handler);
+    if (monitorStdin) {
+      process.stdin.once("end", handler);
+      process.stdin.once("close", handler);
+    }
     return () => {
       process.off("SIGINT", handler);
       process.off("SIGTERM", handler);
-      process.stdin.off("end", handler);
-      process.stdin.off("close", handler);
+      if (monitorStdin) {
+        process.stdin.off("end", handler);
+        process.stdin.off("close", handler);
+      }
     };
   },
 });
@@ -49,7 +56,7 @@ const runtimeDependencies = (): RuntimeDependencies => ({
  * signals close bridge resources without assuming ownership of the Hopper app.
  */
 export const run = async (
-  dependencies: RuntimeDependencies = runtimeDependencies(),
+  dependencies: RuntimeDependencies = createRuntimeDependencies(),
 ): Promise<number> => {
   const environment = snapshotEnvironment(dependencies.env);
   const config = parseConfig(environment);

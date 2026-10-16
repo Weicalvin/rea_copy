@@ -1,12 +1,11 @@
 import { createAndroidAnalysisProvider } from "../composition/android.js";
 import type { AndroidAnalysisPort } from "../application/android/AndroidAnalysisPort.js";
-import type { StdioServerHandle } from "@modelcontextprotocol/server/stdio";
-
 import type { BinarySession } from "../application/binary/BinarySession.js";
 import type { Logger } from "pino";
 import { createServer } from "../server/createServer.js";
 import type { ToolResultDelivery } from "../server/toolResult.js";
 import type { RuntimeDependencies } from "./types.js";
+import type { RuntimeMcpHandle } from "./types.js";
 import type { OptionalProviderLoadResult } from "../application/OptionalObservationProviders.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import {
@@ -29,7 +28,7 @@ export const startMcpTransport = async (
 ): Promise<
   | {
       readonly ok: true;
-      readonly handle: StdioServerHandle;
+      readonly handle: RuntimeMcpHandle;
       readonly closeAndroid: () => Promise<void>;
       readonly closeOptionalProviders: () => Promise<void>;
     }
@@ -55,7 +54,7 @@ export const startMcpTransport = async (
       "Optional MCP adapter could not load; its peers remain available",
     );
   }
-  const androidProviders: AndroidAnalysisPort[] = [];
+  const androidProviders = new Set<AndroidAnalysisPort>();
   const servers = new Set<ReturnType<typeof createServer>>();
   const closeServers = async (): Promise<void> => {
     const results = await Promise.allSettled(
@@ -69,7 +68,7 @@ export const startMcpTransport = async (
   };
   const closeAndroid = async (): Promise<void> => {
     const results = await Promise.allSettled(
-      androidProviders.map((provider) => provider.close()),
+      [...androidProviders].map((provider) => provider.close()),
     );
     for (const result of results)
       if (result.status === "rejected") throw result.reason;
@@ -79,15 +78,15 @@ export const startMcpTransport = async (
   const closeOptionalProviders = async (): Promise<void> => {
     await optionalProviders.browserScenarioCapture?.close?.();
   };
-  let handle: StdioServerHandle;
+  let handle: RuntimeMcpHandle;
   try {
-    handle = dependencies.serve(
+    handle = await dependencies.serve(
       () => {
         // The SDK can discard a discovery probe and construct a replacement server.
         const android = createAndroidAnalysisProvider(
           serverContext.environment,
         );
-        androidProviders.push(android);
+        androidProviders.add(android);
         const server = (dependencies.createServer ?? createServer)(
           { kind: "session", session },
           {
@@ -104,10 +103,12 @@ export const startMcpTransport = async (
         server.close = async () => {
           await closeServer();
           servers.delete(server);
+          androidProviders.delete(android);
         };
         return server;
       },
       {
+        environment: serverContext.environment,
         onerror: () => {
           serverLogger.error(MCP_CONNECTION_LOST);
           dependencies.writeStderr(`${MCP_CONNECTION_LOST}\n`);

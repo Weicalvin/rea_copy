@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
  */
 export const bundleRuntime = async (root) => {
   const compiledRoot = resolve(root, "dist");
-  // CLI, MCP, workers and updater fixtures share one release-identity owner.
+  // CLI, MCP, HTTP, workers and updater fixtures share one release-identity owner.
   const metadataModule = join(compiledRoot, "generatedPackageMetadata.js");
   const isMetadataModule = (id) =>
     isAbsolute(id) && resolve(id) === metadataModule;
@@ -19,6 +19,7 @@ export const bundleRuntime = async (root) => {
   );
   for (const [directory, entries] of [
     ["mcp", { main: "main.js" }],
+    ["http", { main: "httpMain.js" }],
     [
       "cli-runtime",
       {
