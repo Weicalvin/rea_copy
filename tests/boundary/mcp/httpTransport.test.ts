@@ -17,11 +17,19 @@ describe("MCP HTTP request handler", () => {
     notify: vi.fn(),
     bus: {},
   } as unknown as Parameters<typeof createMcpHttpRequestHandler>[0];
-  const app = createMcpHttpRequestHandler(handler, {
-    REA_HTTP_BEARER_TOKEN: token,
-  });
+  const apkAnalysis = vi.fn(
+    async () => Response.json({ analysis: "manifest answer" }),
+  );
+  const app = createMcpHttpRequestHandler(
+    handler,
+    { REA_HTTP_BEARER_TOKEN: token },
+    apkAnalysis,
+  );
 
-  beforeEach(() => fetchMock.mockClear());
+  beforeEach(() => {
+    fetchMock.mockClear();
+    apkAnalysis.mockClear();
+  });
 
   it("exposes a minimal unauthenticated health check", async () => {
     const response = await app(new Request("http://localhost/health"));
@@ -58,6 +66,46 @@ describe("MCP HTTP request handler", () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("mcp-response");
     expect(fetchMock).toHaveBeenCalledWith(request);
+  });
+
+  it("protects APK analysis with the bearer token and dispatches POST", async () => {
+    const request = new Request("http://localhost/api/analyze-apk", {
+      method: "POST",
+      headers: {
+        host: "localhost",
+        authorization: `Bearer ${token}`,
+        "content-type": "multipart/form-data; boundary=test",
+      },
+      body: "--test--\r\n",
+    });
+    const response = await app(request);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ analysis: "manifest answer" });
+    expect(apkAnalysis).toHaveBeenCalledWith(request);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects unauthenticated APK uploads and non-POST methods", async () => {
+    const unauthorized = await app(
+      new Request("http://localhost/api/analyze-apk", {
+        method: "POST",
+        headers: { host: "localhost" },
+      }),
+    );
+    expect(unauthorized.status).toBe(401);
+
+    const methodNotAllowed = await app(
+      new Request("http://localhost/api/analyze-apk", {
+        method: "GET",
+        headers: {
+          host: "localhost",
+          authorization: `Bearer ${token}`,
+        },
+      }),
+    );
+    expect(methodNotAllowed.status).toBe(405);
+    expect(methodNotAllowed.headers.get("allow")).toContain("POST");
+    expect(apkAnalysis).not.toHaveBeenCalled();
   });
 
   it("rejects an untrusted Host header while retaining Origin-independent CORS policy", async () => {

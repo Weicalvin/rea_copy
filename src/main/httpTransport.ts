@@ -11,6 +11,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
+import { createApkAnalysisHttpHandler } from "./apkAnalysisHttp.js";
 import type { RuntimeMcpHandle, RuntimeServerTransport } from "./types.js";
 
 const HTTP_TOKEN_ENV = "REA_HTTP_BEARER_TOKEN";
@@ -88,6 +89,7 @@ const trustedHostnames = (environment: Readonly<NodeJS.ProcessEnv>) => {
 export const createMcpHttpRequestHandler = (
   handler: McpHttpHandler,
   environment: Readonly<NodeJS.ProcessEnv>,
+  apkAnalysis?: (request: Request) => Promise<Response>,
 ): ((request: Request) => Promise<Response>) => {
   const token = validatedToken(environment);
   const allowedHosts = trustedHostnames(environment);
@@ -105,8 +107,22 @@ export const createMcpHttpRequestHandler = (
           })
         : jsonResponse(200, { status: "ok" });
 
-    if (url.pathname !== "/mcp" && url.pathname !== "/mcp/")
+    const isApkAnalysisRoute =
+      url.pathname === "/api/analyze-apk" ||
+      url.pathname === "/api/analyze-apk/";
+    const isMcpRoute = url.pathname === "/mcp" || url.pathname === "/mcp/";
+    if (!isApkAnalysisRoute && !isMcpRoute)
       return jsonResponse(404, { error: "not_found" });
+
+    if (isApkAnalysisRoute && request.method !== "POST")
+      return new Response(JSON.stringify({ error: "method_not_allowed" }), {
+        status: 405,
+        headers: {
+          "allow": "POST, OPTIONS",
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8",
+        },
+      });
 
     const validationHeaders = new Headers(request.headers);
     if (!validationHeaders.has("host")) validationHeaders.set("host", url.host);
@@ -126,6 +142,10 @@ export const createMcpHttpRequestHandler = (
         },
       });
 
+    if (isApkAnalysisRoute)
+      return apkAnalysis === undefined
+        ? jsonResponse(503, { error: "apk_analysis_unavailable" })
+        : apkAnalysis(request);
     return handler.fetch(request);
   };
 };
@@ -221,7 +241,11 @@ export const serveHttp: RuntimeServerTransport = async (
   });
   let dispatch: (request: Request) => Promise<Response>;
   try {
-    dispatch = createMcpHttpRequestHandler(mcpHandler, environment);
+    dispatch = createMcpHttpRequestHandler(
+      mcpHandler,
+      environment,
+      createApkAnalysisHttpHandler({ environment }),
+    );
   } catch (cause) {
     await mcpHandler.close();
     throw cause;
