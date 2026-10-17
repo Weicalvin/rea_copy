@@ -57,10 +57,17 @@ export interface ApkAnalysisCompletionInput {
   signal: AbortSignal;
 }
 
-export type ApkManifestReader = (filePath: string) => Promise<unknown>;
+export type ApkManifestReader = (
+  filePath: string,
+  signal?: AbortSignal,
+) => Promise<unknown>;
 export type ApkAnalysisCompleter = (
   input: ApkAnalysisCompletionInput,
 ) => Promise<string>;
+
+export type ApkAnalysisHttpHandler = ((request: Request) => Promise<Response>) & {
+  cancelAll?: () => number;
+};
 
 export class ApkAnalysisRequestError extends Error {
   constructor(
@@ -131,6 +138,31 @@ const componentList = (value: unknown): Array<Record<string, unknown>> =>
   Array.isArray(value)
     ? value.slice(0, MAX_COMPONENTS).map(componentName)
     : [];
+
+const awaitWithSignal = <T>(
+  promise: Promise<T>,
+  signal: AbortSignal,
+): Promise<T> => {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const onAbort = () => {
+      cleanup();
+      reject(signal.reason ?? new Error("Operation aborted"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error: unknown) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+};
 
 export const summarizeManifest = (
   fileName: string,
@@ -314,6 +346,7 @@ const parseMultipartUpload = async (
   request: Request,
   temporaryDirectory: string,
   maxUploadBytes: number,
+  signal: AbortSignal,
 ): Promise<MultipartUpload> => {
   const contentType = request.headers.get("content-type") ?? "";
   if (!/^multipart\/form-data\s*;/iu.test(contentType))
@@ -413,6 +446,7 @@ const parseMultipartUpload = async (
     fileWrite = pipeline(
       stream,
       createWriteStream(filePath, { flags: "wx", mode: 0o600 }),
+      { signal },
     ).catch(() => {
       issue ??= new ApkAnalysisRequestError(
         400,
@@ -433,9 +467,10 @@ const parseMultipartUpload = async (
   });
 
   try {
-    await pipeline(Readable.fromWeb(request.body), bodyLimit, parser);
+    await pipeline(Readable.fromWeb(request.body), bodyLimit, parser, { signal });
     await fileWrite;
   } catch (cause) {
+    if (signal.aborted) throw signal.reason ?? cause;
     throw (
       issue ??
       (cause instanceof ApkAnalysisRequestError
@@ -517,47 +552,88 @@ export interface CreateApkAnalysisHttpHandlerOptions {
   temporaryRoot?: string;
   maxUploadBytes?: number;
   maxConcurrentRequests?: number;
+  maxAnalysisDurationMs?: number;
 }
 
 export const createApkAnalysisHttpHandler = (
   options: CreateApkAnalysisHttpHandlerOptions,
-): ((request: Request) => Promise<Response>) => {
+): ApkAnalysisHttpHandler => {
   const complete = options.complete ?? defaultGroqCompleter(options.environment);
   const parseManifest = options.parseManifest ?? readApkManifest;
   const temporaryRoot = options.temporaryRoot ?? tmpdir();
   const maxUploadBytes = options.maxUploadBytes ?? MAX_UPLOAD_BYTES;
   const maxConcurrentRequests = options.maxConcurrentRequests ?? 1;
-  let activeRequests = 0;
+  const maxAnalysisDurationMs = options.maxAnalysisDurationMs ?? 120_000;
+  const activeRequests = new Set<AbortController>();
+  const cancelAll = (): number => {
+    let cancelled = 0;
+    for (const controller of activeRequests) {
+      if (controller.signal.aborted) continue;
+      controller.abort(new Error("analysis_cancelled"));
+      cancelled += 1;
+    }
+    return cancelled;
+  };
 
-  return async (request) => {
+  const handle = async (request: Request): Promise<Response> => {
     if (complete === undefined)
       return Response.json(
         { error: "groq_not_configured", message: "GROQ_API_KEY is not set on the server." },
         { status: 503, headers: { "cache-control": "no-store" } },
       );
-    if (activeRequests >= maxConcurrentRequests)
+    if (activeRequests.size >= maxConcurrentRequests)
       return Response.json(
-        { error: "analysis_busy", message: "Another APK analysis is in progress. Please retry shortly." },
+        { error: "analysis_busy", message: "Another APK analysis is in progress. Use the stop-all button to cancel it or retry shortly." },
         { status: 429, headers: { "cache-control": "no-store", "retry-after": "10" } },
       );
 
-    activeRequests += 1;
+    const controller = new AbortController();
+    const signal = AbortSignal.any([request.signal, controller.signal]);
+    const timeout = setTimeout(
+      () => controller.abort(new Error("analysis_timeout")),
+      maxAnalysisDurationMs,
+    );
+    activeRequests.add(controller);
     let temporaryDirectory: string | undefined;
     try {
       temporaryDirectory = await mkdtemp(join(temporaryRoot, "rea-apk-analysis-"));
-      const upload = await parseMultipartUpload(request, temporaryDirectory, maxUploadBytes);
-      const rawManifest = await parseManifest(upload.filePath);
+      const upload = await parseMultipartUpload(
+        request,
+        temporaryDirectory,
+        maxUploadBytes,
+        signal,
+      );
+      const rawManifest = await awaitWithSignal(
+        parseManifest(upload.filePath, signal),
+        signal,
+      );
       const manifest = summarizeManifest(upload.fileName, rawManifest);
       const analysis = await complete({
         question: upload.question,
         manifest,
-        signal: request.signal,
+        signal,
       });
       return Response.json(
         { analysis, apk: manifest },
         { status: 200, headers: { "cache-control": "no-store" } },
       );
     } catch (cause) {
+      if (request.signal.aborted)
+        return Response.json(
+          { error: "client_disconnected", message: "The client disconnected before analysis completed." },
+          { status: 499, headers: { "cache-control": "no-store" } },
+        );
+      const abortReason = controller.signal.reason;
+      if (abortReason instanceof Error && abortReason.message === "analysis_cancelled")
+        return Response.json(
+          { error: "analysis_cancelled", message: "Analysis was cancelled by the stop-all command." },
+          { status: 409, headers: { "cache-control": "no-store" } },
+        );
+      if (abortReason instanceof Error && abortReason.message === "analysis_timeout")
+        return Response.json(
+          { error: "analysis_timeout", message: "Analysis exceeded the time limit. The server released the active slot; please retry." },
+          { status: 504, headers: { "cache-control": "no-store" } },
+        );
       const error =
         cause instanceof ApkAnalysisRequestError
           ? cause
@@ -571,9 +647,12 @@ export const createApkAnalysisHttpHandler = (
         { status: error.status, headers: { "cache-control": "no-store" } },
       );
     } finally {
+      clearTimeout(timeout);
+      activeRequests.delete(controller);
       if (temporaryDirectory !== undefined)
         await rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined);
-      activeRequests -= 1;
     }
   };
+
+  return Object.assign(handle, { cancelAll });
 };

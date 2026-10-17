@@ -20,6 +20,8 @@ describe("MCP HTTP request handler", () => {
   const apkAnalysis = vi.fn(
     async () => Response.json({ analysis: "manifest answer" }),
   );
+  const cancelAll = vi.fn(() => 2);
+  Object.assign(apkAnalysis, { cancelAll });
   const app = createMcpHttpRequestHandler(
     handler,
     { REA_HTTP_BEARER_TOKEN: token },
@@ -29,6 +31,7 @@ describe("MCP HTTP request handler", () => {
   beforeEach(() => {
     fetchMock.mockClear();
     apkAnalysis.mockClear();
+    cancelAll.mockClear();
   });
 
   it("exposes a minimal unauthenticated health check", async () => {
@@ -106,6 +109,41 @@ describe("MCP HTTP request handler", () => {
     expect(methodNotAllowed.status).toBe(405);
     expect(methodNotAllowed.headers.get("allow")).toContain("POST");
     expect(apkAnalysis).not.toHaveBeenCalled();
+  });
+
+  it("protects cancel-all with the bearer token and accepts POST only", async () => {
+    const unauthorized = await app(
+      new Request("http://localhost/api/cancel-analyses", {
+        method: "POST",
+        headers: { host: "localhost" },
+      }),
+    );
+    expect(unauthorized.status).toBe(401);
+    expect(cancelAll).not.toHaveBeenCalled();
+
+    const methodNotAllowed = await app(
+      new Request("http://localhost/api/cancel-analyses", {
+        method: "GET",
+        headers: {
+          host: "localhost",
+          authorization: `Bearer ${token}`,
+        },
+      }),
+    );
+    expect(methodNotAllowed.status).toBe(405);
+
+    const response = await app(
+      new Request("http://localhost/api/cancel-analyses", {
+        method: "POST",
+        headers: {
+          host: "localhost",
+          authorization: `Bearer ${token}`,
+        },
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ cancelled: 2 });
+    expect(cancelAll).toHaveBeenCalledTimes(1);
   });
 
   it("rejects an untrusted Host header while retaining Origin-independent CORS policy", async () => {

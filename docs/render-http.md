@@ -8,6 +8,7 @@ should use the separate HTTP entrypoint:
 - **Health check path:** `/health`
 - **MCP endpoint:** `/mcp`
 - **APK analysis endpoint:** `POST /api/analyze-apk`
+- **Cancel all APK analyses:** `POST /api/cancel-analyses`
 - **Runtime:** Node.js (the repository's `.nvmrc` selects the supported version)
 
 Set `REA_HTTP_BEARER_TOKEN` in the Render service environment to a randomly
@@ -39,8 +40,13 @@ count and the uncompressed root `AndroidManifest.xml` size (maximum 2 MiB), then
 uses the pure-Node `adbkit-apkreader` parser to extract bounded manifest fields.
 It sends only the normalized manifest summary and question to Groq and deletes
 the temporary file after the request. The endpoint accepts only one analysis at
-a time per service instance and returns HTTP 429 while busy. It does not execute
-the APK and does not use JDK, JADX, or DEX analysis on Render.
+a time per service instance and returns HTTP 429 while busy. A stalled analysis
+is aborted after 120 seconds, and the active slot is released during cleanup.
+The authenticated `POST /api/cancel-analyses` endpoint cancels all active APK
+analyses on the current service instance and returns `{ "cancelled": <count> }`.
+Only use it when you intend to stop every in-progress APK analysis for this
+service. It does not execute the APK and does not use JDK, JADX, or DEX analysis
+on Render.
 
 The successful response is JSON, for example:
 

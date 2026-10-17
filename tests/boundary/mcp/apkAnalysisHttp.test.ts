@@ -144,6 +144,62 @@ describe("APK analysis HTTP handler", () => {
     expect(parseManifest).not.toHaveBeenCalled();
   });
 
+  it("cancels all active analyses and releases the concurrency slot", async () => {
+    const complete = vi.fn(
+      ({ signal }: { signal: AbortSignal }) =>
+        new Promise<string>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        }),
+    );
+    const handler = createApkAnalysisHttpHandler({
+      environment: {},
+      parseManifest: vi.fn(async () => ({})),
+      complete,
+      maxConcurrentRequests: 1,
+      maxAnalysisDurationMs: 5_000,
+    });
+
+    const firstRequest = handler(requestWith({ question: "分析一次" }));
+    await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(1));
+    const busy = await handler(requestWith({ question: "第二次分析" }));
+    expect(busy.status).toBe(429);
+
+    expect(handler.cancelAll?.()).toBe(1);
+    const cancelled = await firstRequest;
+    expect(cancelled.status).toBe(409);
+    expect(await cancelled.json()).toMatchObject({ error: "analysis_cancelled" });
+    expect(handler.cancelAll?.()).toBe(0);
+
+    const afterCancellation = handler(requestWith({ question: "再次分析" }));
+    await vi.waitFor(() => expect(complete).toHaveBeenCalledTimes(2));
+    expect(handler.cancelAll?.()).toBe(1);
+    expect((await afterCancellation).status).toBe(409);
+  });
+
+  it("times out a stalled analysis and releases its concurrency slot", async () => {
+    const complete = vi.fn(
+      ({ signal }: { signal: AbortSignal }) =>
+        new Promise<string>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        }),
+    );
+    const handler = createApkAnalysisHttpHandler({
+      environment: {},
+      parseManifest: vi.fn(async () => ({})),
+      complete,
+      maxAnalysisDurationMs: 100,
+    });
+
+    const response = await handler(requestWith({ question: "測試逾時" }));
+    expect(response.status).toBe(504);
+    expect(await response.json()).toMatchObject({ error: "analysis_timeout" });
+    expect(handler.cancelAll?.()).toBe(0);
+  });
+
   it("normalizes only bounded manifest fields", () => {
     const result = summarizeManifest("a.apk", {
       package: "org.example",
