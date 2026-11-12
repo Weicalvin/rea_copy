@@ -11,24 +11,29 @@ const apkBlob = (bytes = [0x50, 0x4b, 0x03, 0x04, 1, 2, 3, 4]) =>
     type: "application/vnd.android.package-archive",
   });
 
-const requestWith = (options: {
-  fileName?: string;
-  includeFile?: boolean;
-  question?: string;
-  bytes?: number[];
-} = {}) => {
+const requestWith = (
+  options: {
+    fileName?: string;
+    includeFile?: boolean;
+    question?: string;
+    bytes?: number[];
+  } = {},
+) => {
   const form = new FormData();
   if (options.includeFile !== false)
-    form.append("file", apkBlob(options.bytes), options.fileName ?? "sample.apk");
-  if (options.question !== undefined)
-    form.append("question", options.question);
+    form.append(
+      "file",
+      apkBlob(options.bytes),
+      options.fileName ?? "sample.apk",
+    );
+  if (options.question !== undefined) form.append("question", options.question);
   return new Request("http://localhost/api/analyze-apk", {
     method: "POST",
     body: form,
   });
 };
 
-describe("APK analysis HTTP handler", () => {
+describe("APK upload parsing and validation", () => {
   it("parses streamed upload, passes bounded metadata and question to Groq, and returns the answer", async () => {
     let uploadedBytes: Buffer | undefined;
     const parseManifest = vi.fn(async (filePath: string) => {
@@ -153,7 +158,9 @@ describe("APK analysis HTTP handler", () => {
     );
     expect(parseManifest).not.toHaveBeenCalled();
   });
+});
 
+describe("APK analysis lifecycle", () => {
   it("returns a configuration error when GROQ_API_KEY is absent", async () => {
     const parseManifest = vi.fn(async () => ({}));
     const handler = createApkAnalysisHttpHandler({
@@ -194,7 +201,9 @@ describe("APK analysis HTTP handler", () => {
     expect(handler.cancelAll?.()).toBe(1);
     const cancelled = await firstRequest;
     expect(cancelled.status).toBe(409);
-    expect(await cancelled.json()).toMatchObject({ error: "analysis_cancelled" });
+    expect(await cancelled.json()).toMatchObject({
+      error: "analysis_cancelled",
+    });
     expect(handler.cancelAll?.()).toBe(0);
 
     const afterCancellation = handler(requestWith({ question: "再次分析" }));
@@ -224,7 +233,9 @@ describe("APK analysis HTTP handler", () => {
     expect(await response.json()).toMatchObject({ error: "analysis_timeout" });
     expect(handler.cancelAll?.()).toBe(0);
   });
+});
 
+describe("APK manifest summary", () => {
   it("normalizes only bounded manifest fields", () => {
     const result = summarizeManifest("a.apk", {
       package: "org.example",

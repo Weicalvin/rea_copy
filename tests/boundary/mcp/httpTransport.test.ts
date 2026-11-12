@@ -6,34 +6,34 @@ import {
   createMcpHttpRequestHandler,
 } from "../../../src/main/httpTransport.js";
 
-describe("MCP HTTP request handler", () => {
-  const token = "a".repeat(64);
-  const fetchMock = vi.fn(
-    async () => new Response("mcp-response", { status: 200 }),
-  );
-  const handler = {
-    fetch: fetchMock,
-    close: vi.fn(async () => undefined),
-    notify: vi.fn(),
-    bus: {},
-  } as unknown as Parameters<typeof createMcpHttpRequestHandler>[0];
-  const apkAnalysis = vi.fn(
-    async () => Response.json({ analysis: "manifest answer" }),
-  );
-  const cancelAll = vi.fn(() => 2);
-  Object.assign(apkAnalysis, { cancelAll });
-  const app = createMcpHttpRequestHandler(
-    handler,
-    { REA_HTTP_BEARER_TOKEN: token },
-    apkAnalysis,
-  );
+const token = "a".repeat(64);
+const fetchMock = vi.fn(
+  async () => new Response("mcp-response", { status: 200 }),
+);
+const handler = {
+  fetch: fetchMock,
+  close: vi.fn(async () => undefined),
+  notify: vi.fn(),
+  bus: {},
+} as unknown as Parameters<typeof createMcpHttpRequestHandler>[0];
+const apkAnalysis = vi.fn(async () =>
+  Response.json({ analysis: "manifest answer" }),
+);
+const cancelAll = vi.fn(() => 2);
+Object.assign(apkAnalysis, { cancelAll });
+const app = createMcpHttpRequestHandler(
+  handler,
+  { REA_HTTP_BEARER_TOKEN: token },
+  apkAnalysis,
+);
 
-  beforeEach(() => {
-    fetchMock.mockClear();
-    apkAnalysis.mockClear();
-    cancelAll.mockClear();
-  });
+beforeEach(() => {
+  fetchMock.mockClear();
+  apkAnalysis.mockClear();
+  cancelAll.mockClear();
+});
 
+describe("MCP and APK route authentication", () => {
   it("exposes a minimal unauthenticated health check", async () => {
     const response = await app(new Request("http://localhost/health"));
     expect(response.status).toBe(200);
@@ -110,7 +110,9 @@ describe("MCP HTTP request handler", () => {
     expect(methodNotAllowed.headers.get("allow")).toContain("POST");
     expect(apkAnalysis).not.toHaveBeenCalled();
   });
+});
 
+describe("cancel route and Host validation", () => {
   it("protects cancel-all with the bearer token and accepts POST only", async () => {
     const unauthorized = await app(
       new Request("http://localhost/api/cancel-analyses", {
@@ -162,7 +164,9 @@ describe("MCP HTTP request handler", () => {
     expect(untrustedHost.status).toBe(403);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+});
 
+describe("CORS and configuration validation", () => {
   it("allows any browser Origin and handles MCP preflight requests", async () => {
     const server = createServer((request, response) => {
       applyCors(request, response, () => response.end("ok"));
