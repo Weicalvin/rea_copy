@@ -374,7 +374,7 @@ const parseMultipartUpload = async (
   let fileName: string | undefined;
   let question: string | undefined;
   let fileCount = 0;
-  let fieldCount = 0;
+  let questionFieldCount = 0;
   let issue: ApkAnalysisRequestError | undefined;
   let fileWrite: Promise<void> | undefined;
   let totalBodyBytes = 0;
@@ -397,12 +397,13 @@ const parseMultipartUpload = async (
   });
 
   parser.on("field", (name, value, info) => {
-    fieldCount += 1;
-    if (name !== QUESTION_FIELD || fieldCount > 1) {
+    if (name !== QUESTION_FIELD) return;
+    questionFieldCount += 1;
+    if (questionFieldCount > 1) {
       issue ??= new ApkAnalysisRequestError(
         400,
         "invalid_form_fields",
-        "Multipart form must contain only one question field and one APK file.",
+        "Multipart form must contain exactly one question field.",
       );
       return;
     }

@@ -36,9 +36,12 @@ The mobile client uploads an APK as `multipart/form-data` to
 - `question`: one custom question, maximum **4,000 characters / 8 KiB**.
 
 The multipart parser allows up to **50,000 fields** and **50 MiB per field**.
-Endpoint validation still accepts only `file` and `question`, so unexpected or
-duplicate fields are rejected. The complete request body is capped at the APK
-limit plus one 50 MiB field and 128 KiB of multipart overhead.
+The endpoint requires exactly one `file` APK and one non-empty `question`;
+additional text fields (for example `model`, `provider`, `apiKey`, or
+`systemPrompt`) are ignored and are not forwarded to Groq. Duplicate `question`
+fields and additional file parts are rejected. The complete request body is
+capped at the APK limit plus one 50 MiB field and 128 KiB of multipart overhead,
+so ignored fields remain bounded by the same parser and request-size limits.
 
 The server streams the file to a private temporary directory, checks ZIP entry
 count and the uncompressed root `AndroidManifest.xml` size (maximum 2 MiB), then

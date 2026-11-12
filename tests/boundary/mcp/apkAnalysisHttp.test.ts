@@ -112,31 +112,6 @@ describe("APK upload parsing and validation", () => {
     );
   });
 
-  it("parses extra fields without triggering the Busboy field-count limit", async () => {
-    const handler = createApkAnalysisHttpHandler({
-      environment: {},
-      parseManifest: vi.fn(async () => ({})),
-      complete: vi.fn(async () => "unused"),
-    });
-    const form = new FormData();
-    form.append("file", apkBlob(), "sample.apk");
-    form.append("question", "分析");
-    form.append("unexpected", "extra value");
-
-    const response = await handler(
-      new Request("http://localhost/api/analyze-apk", {
-        method: "POST",
-        body: form,
-      }),
-    );
-
-    expect(response.status).toBe(400);
-    expect((await response.json()) as { error: string }).toHaveProperty(
-      "error",
-      "invalid_form_fields",
-    );
-  });
-
   it("enforces the configured upload-size limit before manifest parsing", async () => {
     const parseManifest = vi.fn(async () => ({}));
     const handler = createApkAnalysisHttpHandler({
@@ -157,6 +132,69 @@ describe("APK upload parsing and validation", () => {
       "apk_too_large",
     );
     expect(parseManifest).not.toHaveBeenCalled();
+  });
+});
+
+describe("optional multipart client settings", () => {
+  it("ignores extra settings and does not forward them to the analyzer", async () => {
+    const complete = vi.fn(async ({ question }: { question: string }) => {
+      expect(question).toBe("分析 APK");
+      return "分析完成";
+    });
+    const handler = createApkAnalysisHttpHandler({
+      environment: {},
+      parseManifest: vi.fn(async () => ({})),
+      complete,
+    });
+    const form = new FormData();
+    form.append("file", apkBlob(), "sample.apk");
+    form.append("question", "分析 APK");
+    form.append("model", "local-llama");
+    form.append("provider", "local");
+    form.append("apiKey", "client-secret-not-forwarded");
+    form.append("systemPrompt", "額外設定不應覆寫伺服器提示");
+
+    const response = await handler(
+      new Request("http://localhost/api/analyze-apk", {
+        method: "POST",
+        body: form,
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ analysis: "分析完成" });
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(complete).toHaveBeenCalledWith(
+      expect.objectContaining({ question: "分析 APK" }),
+    );
+    expect(JSON.stringify(complete.mock.calls[0]?.[0])).not.toContain(
+      "client-secret-not-forwarded",
+    );
+  });
+
+  it("rejects duplicate question fields", async () => {
+    const handler = createApkAnalysisHttpHandler({
+      environment: {},
+      parseManifest: vi.fn(async () => ({})),
+      complete: vi.fn(async () => "unused"),
+    });
+    const form = new FormData();
+    form.append("file", apkBlob(), "sample.apk");
+    form.append("question", "第一個問題");
+    form.append("question", "第二個問題");
+
+    const response = await handler(
+      new Request("http://localhost/api/analyze-apk", {
+        method: "POST",
+        body: form,
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as { error: string }).toHaveProperty(
+      "error",
+      "invalid_form_fields",
+    );
   });
 });
 
