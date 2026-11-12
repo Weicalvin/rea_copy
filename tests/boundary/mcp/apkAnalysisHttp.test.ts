@@ -107,6 +107,31 @@ describe("APK analysis HTTP handler", () => {
     );
   });
 
+  it("parses extra fields without triggering the Busboy field-count limit", async () => {
+    const handler = createApkAnalysisHttpHandler({
+      environment: {},
+      parseManifest: vi.fn(async () => ({})),
+      complete: vi.fn(async () => "unused"),
+    });
+    const form = new FormData();
+    form.append("file", apkBlob(), "sample.apk");
+    form.append("question", "分析");
+    form.append("unexpected", "extra value");
+
+    const response = await handler(
+      new Request("http://localhost/api/analyze-apk", {
+        method: "POST",
+        body: form,
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect((await response.json()) as { error: string }).toHaveProperty(
+      "error",
+      "invalid_form_fields",
+    );
+  });
+
   it("enforces the configured upload-size limit before manifest parsing", async () => {
     const parseManifest = vi.fn(async () => ({}));
     const handler = createApkAnalysisHttpHandler({

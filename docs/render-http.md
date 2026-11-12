@@ -35,6 +35,11 @@ The mobile client uploads an APK as `multipart/form-data` to
 - `file`: one `.apk` file, maximum **100 MiB**.
 - `question`: one custom question, maximum **4,000 characters / 8 KiB**.
 
+The multipart parser allows up to **50,000 fields** and **50 MiB per field**.
+Endpoint validation still accepts only `file` and `question`, so unexpected or
+duplicate fields are rejected. The complete request body is capped at the APK
+limit plus one 50 MiB field and 128 KiB of multipart overhead.
+
 The server streams the file to a private temporary directory, checks ZIP entry
 count and the uncompressed root `AndroidManifest.xml` size (maximum 2 MiB), then
 uses the pure-Node `adbkit-apkreader` parser to extract bounded manifest fields.

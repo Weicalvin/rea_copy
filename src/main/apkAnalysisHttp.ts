@@ -12,6 +12,8 @@ import { pipeline } from "node:stream/promises";
 const APK_FIELD = "file";
 const QUESTION_FIELD = "question";
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+const MAX_MULTIPART_FIELDS = 50_000;
+const MAX_MULTIPART_FIELD_BYTES = 50 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 2 * 1024 * 1024;
 const MAX_ZIP_ENTRIES = 20_000;
 const MAX_QUESTION_BYTES = 8_000;
@@ -363,9 +365,9 @@ const parseMultipartUpload = async (
     limits: {
       fileSize: maxUploadBytes,
       files: 1,
-      fields: 1,
-      parts: 3,
-      fieldSize: MAX_QUESTION_BYTES,
+      fields: MAX_MULTIPART_FIELDS,
+      parts: MAX_MULTIPART_FIELDS + 1,
+      fieldSize: MAX_MULTIPART_FIELD_BYTES,
     },
   });
   const filePath = join(temporaryDirectory, "upload.apk");
@@ -376,7 +378,7 @@ const parseMultipartUpload = async (
   let issue: ApkAnalysisRequestError | undefined;
   let fileWrite: Promise<void> | undefined;
   let totalBodyBytes = 0;
-  const maximumBodyBytes = maxUploadBytes + MAX_QUESTION_BYTES + 128 * 1024;
+  const maximumBodyBytes = maxUploadBytes + MAX_MULTIPART_FIELD_BYTES + 128 * 1024;
   const bodyLimit = new Transform({
     transform(chunk: Buffer, _encoding, callback) {
       totalBodyBytes += chunk.byteLength;
